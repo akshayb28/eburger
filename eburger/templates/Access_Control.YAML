@@ -1,0 +1,106 @@
+name: "Enhanced Access Control Analysis"
+severity: "High"
+precision: "High"
+description: "Analyzes the access control mechanisms and privileges on sensitive functions, centralization risks, and potential reentrancy vulnerabilities within the contract."
+impact: "Weak access control exposes functions to unauthorized users, potentially leading to malicious modifications of critical state, loss of funds, or increased centralization risks."
+action-items:
+  - "Apply specific access modifiers to all privileged functions, including role-based and ownership controls."
+  - "Ensure non-reentrancy modifiers are used for functions with nested external calls."
+  - "Restrict minting, burning, and pausing functions, along with other sensitive functions, to particular roles."
+  - "Implement timelocks or multi-step processes for critical governance or high-risk operations."
+  - "Examine all state-modifying functions for appropriate access controls."
+references:
+  - "OpenZeppelin: Access Control https://docs.openzeppelin.com/contracts/4.x/access-control"
+  - "Solidity Security Best Practices https://consensys.github.io/smart-contract-best-practices/"
+  - "Solidity Reentrancy https://docs.soliditylang.org/en/v0.8.9/security-considerations.html#reentrancy"
+reports:
+  - "https://consensys.net/diligence/security-assessments/2021/07/uniswap-v3-core/"
+vulnerable_contracts:
+  - "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/access/AccessControl.sol"
+python: |
+    results = []
+    
+    # Define sensitive operations and their specific access control requirements
+    sensitive_operations = {
+        "mint": "onlyMinter",
+        "burn": "onlyBurner",
+        "pause": "onlyPauser",
+        "upgradeTo": "onlyOwner",
+        "transferOwnership": "onlyOwner"
+    }
+    
+    # Check for access control modifiers on privileged functions
+    privileged_functions = ["onlyOwner", "onlyRole", "onlyAdmin", "whenNotPaused", "whenPaused"]
+    function_nodes = get_nodes_by_types(ast_data, "FunctionDefinition")
+    for func in function_nodes:
+        func_name = func.get("name")
+        modifiers = func.get("modifiers", [])
+        # Check specific sensitive operations for corresponding access control modifiers
+        if func_name in sensitive_operations:
+            required_modifier = sensitive_operations[func_name]
+            if required_modifier not in modifiers:
+                results.append(func)
+        elif any(priv_mod in modifiers for priv_mod in privileged_functions):
+            results.append(func)
+        elif any(state in func.get("stateMutability", "") for state in ["nonpayable", "payable"]):
+            results.append(func)
+
+    # Ownership Pattern: Check owner variable and transferOwnership with onlyOwner modifier
+    owner_variable = search_variable(ast_data, "owner")
+    transfer_ownership = search_function(ast_data, "transferOwnership")
+    if owner_variable:
+        results.append(owner_variable)
+    if transfer_ownership and "onlyOwner" not in transfer_ownership.get("modifiers", []):
+        results.append(transfer_ownership)
+            
+    # Role-Based Access Control (RBAC) checks
+    role_based_functions = ["grantRole", "revokeRole"]
+    for role_func in role_based_functions:
+        func = search_function(ast_data, role_func)
+        if func and "onlyOwner" not in func.get("modifiers", []):
+            results.append(func)
+    
+    # Centralization Risks: Identify mint, burn, pause functions and those with governance implications
+    for operation, required_modifier in sensitive_operations.items():
+        operation_func = search_function(ast_data, operation)
+        if operation_func and required_modifier not in operation_func.get("modifiers", []):
+            results.append(operation_func)
+    
+    # Modifier usage across functions, including centralization checks for governance functions
+    governance_operations = ["mint", "burn", "pause", "setParameter", "updateGovernance"]
+    for gov_op in governance_operations:
+        gov_func = search_function(ast_data, gov_op)
+        if gov_func and not any(priv_mod in gov_func.get("modifiers", []) for priv_mod in privileged_functions):
+            results.append(gov_func)
+    
+    # State-changing operations
+    state_vars = ["totalSupply", "balances", "allowances"]
+    for state_var in state_vars:
+        state_funcs = search_functions_modifying_variable(ast_data, state_var)
+        for func in state_funcs:
+            if not any(priv_mod in func.get("modifiers", []) for priv_mod in privileged_functions):
+                results.append(func)
+    
+    # Administrative functions with access controls
+    admin_operations = ["upgradeTo", "setParameter", "withdrawFunds"]
+    for admin_op in admin_operations:
+        admin_func = search_function(ast_data, admin_op)
+        if admin_func and "onlyOwner" not in admin_func.get("modifiers", []):
+            results.append(admin_func)
+    
+    # Check for two-step processes for critical changes
+    two_step_changes = search_two_step_processes(ast_data, "transferOwnership")
+    results.extend(two_step_changes)
+    
+    # Timelock mechanisms check
+    timelock_func = search_function(ast_data, "timelock")
+    if timelock_func and not any(priv_mod in timelock_func.get("modifiers", []) for priv_mod in privileged_functions):
+        results.append(timelock_func)
+    
+    # External calls in privileged functions - enhanced reentrancy check
+    external_calls = search_external_calls_in_privileged_functions(ast_data)
+    for call in external_calls:
+        if not "nonReentrant" in call.get("modifiers", []):
+            results.append(call)
+    
+    return results
