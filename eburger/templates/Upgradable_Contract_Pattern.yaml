@@ -1,0 +1,82 @@
+name: "Upgradable Contract Pattern Analysis"
+severity: "High"
+precision: "High"
+description: "Detects common patterns and potential risks in upgradable smart contracts, ensuring proper access control, storage layout stability, and secure upgrade mechanisms."
+impact: "Insecure upgrade mechanisms or storage misalignments in upgradable contracts can lead to severe vulnerabilities, including unauthorized upgrades, data corruption, and contract destruction."
+action-items:
+  - "Verify that only authorized addresses can initiate upgrades."
+  - "Ensure storage layout compatibility between contract versions."
+  - "Check for initializer usage in place of constructors in upgradeable contracts."
+  - "Implement timelocks or emergency stop mechanisms for high-risk upgrade functions."
+  - "Verify that all upgrade functions correctly delegate calls and are not vulnerable to self-destruct risks."
+references:
+  - "OpenZeppelin Upgradeable Contracts https://docs.openzeppelin.com/upgrades-plugins/1.x/writing-upgradeable"
+  - "Proxy Patterns in Solidity https://blog.openzeppelin.com/proxy-patterns/"
+  - "UUPS Proxy Standard in Solidity https://eips.ethereum.org/EIPS/eip-1822"
+  - "Upgrading Smart Contracts with OpenZeppelin https://docs.openzeppelin.com/learn/upgrading-smart-contracts"
+reports:
+  - "https://consensys.net/diligence/security-assessments/2021/07/uniswap-v3-core/"
+vulnerable_contracts:
+  - "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/master/contracts/proxy/utils/UUPSUpgradeable.sol"
+python: |
+    results = []
+
+    # Detecting upgradable contract patterns
+    patterns = ["UUPSUpgradeable", "TransparentUpgradeableProxy", "BeaconProxy", "OpenZeppelin Upgradeable"]
+    imports = get_imports(ast_data)
+    for imp in imports:
+        if any(pattern in imp for pattern in patterns):
+            results.append(imp)
+
+    # Storage Layout Analysis
+    storage_vars = get_state_variables(ast_data)
+    for i, var in enumerate(storage_vars[:-1]):
+        # Check for reordering or middle additions
+        if var.get("order") != i:
+            results.append(var)
+        # Check for type changes
+        prev_type = var.get("type")
+        curr_type = storage_vars[i + 1].get("type")
+        if prev_type and curr_type and prev_type != curr_type:
+            results.append(storage_vars[i + 1])
+
+    # Check for initializer usage
+    init_functions = search_function_by_modifier(ast_data, "initializer")
+    if not init_functions:
+        results.append("Missing initializer function")
+    constructors = search_nodes_by_type(ast_data, "Constructor")
+    if constructors:
+        results.append("Constructor found in upgradeable contract")
+
+    # Upgrade Mechanism Analysis
+    upgrade_functions = ["upgradeTo", "upgradeToAndCall"]
+    for func_name in upgrade_functions:
+        func = search_function(ast_data, func_name)
+        if func:
+            modifiers = func.get("modifiers", [])
+            if "onlyOwner" not in modifiers:
+                results.append(f"{func_name} lacks onlyOwner modifier")
+            # Check for _authorizeUpgrade function in UUPS contracts
+            if func_name == "upgradeToAndCall":
+                authorize_upgrade = search_function(ast_data, "_authorizeUpgrade")
+                if authorize_upgrade and "onlyOwner" not in authorize_upgrade.get("modifiers", []):
+                    results.append(authorize_upgrade)
+
+    # Check for self-destruct risks in upgrade functions
+    functions = get_nodes_by_types(ast_data, "FunctionDefinition")
+    for func in functions:
+        body = func.get("body", [])
+        for statement in body:
+            if "selfdestruct" in statement.get("expression", {}):
+                results.append(func)
+
+    # Detect emergency stop and timelock mechanisms for upgrade functions
+    timelock_func = search_function(ast_data, "timelock")
+    if timelock_func and not any(priv_mod in timelock_func.get("modifiers", []) for priv_mod in ["onlyOwner", "onlyAdmin"]):
+        results.append(timelock_func)
+
+    emergency_stop = search_function(ast_data, "pause")
+    if emergency_stop and "onlyOwner" not in emergency_stop.get("modifiers", []):
+        results.append(emergency_stop)
+
+    return results
