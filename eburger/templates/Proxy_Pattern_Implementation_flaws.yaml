@@ -1,0 +1,84 @@
+name: "Proxy Pattern Implementation Flaws Detection"
+severity: "High"
+precision: "High"
+description: "Analyzes the implementation of proxy contracts for common misconfigurations, access control flaws, and improper delegatecall handling that can lead to vulnerabilities."
+impact: "Misconfigured proxy patterns, improper access control, or delegatecall misuse can lead to critical vulnerabilities, including unauthorized upgrades, data corruption, or contract destruction."
+action-items:
+  - "Ensure only authorized addresses can modify the implementation address or perform upgrades."
+  - "Verify that delegatecall usage handles return data properly to avoid execution vulnerabilities."
+  - "Ensure EIP-1967 storage slot compliance for implementation addresses in proxy contracts."
+  - "Check for self-destruct capabilities and restrict usage in proxy and logic contracts."
+  - "Implement distinct admin and user addresses for transparent proxy patterns to prevent conflicts."
+references:
+  - "EIP-1967 Proxy Storage Slot Compliance https://eips.ethereum.org/EIPS/eip-1967"
+  - "Proxy Patterns in Solidity https://blog.openzeppelin.com/proxy-patterns/"
+  - "EIP-1822 UUPS Proxy Standard https://eips.ethereum.org/EIPS/eip-1822"
+  - "Understanding Self-Destruct Vulnerability https://eips.ethereum.org/EIPS/eip-6780"
+reports:
+  - "https://consensys.net/diligence/security-assessments/2021/07/uniswap-v3-core/"
+vulnerable_contracts:
+  - "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/master/contracts/proxy/TransparentUpgradeableProxy.sol"
+python: |
+    results = []
+
+    # Detect Proxy Contract Patterns
+    proxy_indicators = ["delegatecall", "fallback", "receive", "TransparentUpgradeableProxy", "BeaconProxy", "UUPSProxy"]
+    functions = get_nodes_by_types(ast_data, "FunctionDefinition")
+    for func in functions:
+        func_name = func.get("name")
+        if any(keyword in func_name for keyword in proxy_indicators):
+            results.append(func)
+        if "delegatecall" in func.get("body", {}):
+            results.append(func)
+
+    # Inspect Delegatecall Usage
+    for func in functions:
+        body = func.get("body", [])
+        for statement in body:
+            if "delegatecall" in statement.get("expression", {}):
+                # Check for proper handling of delegatecall return data
+                if not statement.get("returns", {}).get("success"):
+                    results.append(f"Delegatecall return data not handled properly in {func.get('name')}")
+                results.append(func)
+
+    # Implementation Logic - EIP-1967 compliance
+    storage_slots = get_storage_slots(ast_data)
+    eip_1967_slot = "0x360894A13BA1A3210667C828492DB98DCA3E2076CC3735A920A3CA505D382BBC"
+    for slot in storage_slots:
+        if slot.get("name") == "implementation" and slot.get("type") != eip_1967_slot:
+            results.append(slot)
+        elif slot.get("type") == "custom" and not slot.get("name").startswith("proxy"):
+            results.append(slot)
+
+    # Access Control for Implementation Changes
+    upgrade_functions = ["upgradeTo", "setImplementation"]
+    for func_name in upgrade_functions:
+        func = search_function(ast_data, func_name)
+        if func:
+            if "onlyOwner" not in func.get("modifiers", []):
+                results.append(f"{func_name} lacks onlyOwner or equivalent modifier")
+
+    # Check Misconfiguration in Upgrade Process
+    # Transparent Proxy Pattern - Check distinct admin address
+    admin_var = search_variable(ast_data, "admin")
+    if admin_var and admin_var.get("value") == "user":
+        results.append("Admin address conflicts with user address in Transparent Proxy Pattern")
+
+    # Beacon Proxy Pattern - Check beacon contract implementation
+    beacon_func = search_function(ast_data, "beacon")
+    if beacon_func and "onlyOwner" not in beacon_func.get("modifiers", []):
+        results.append("Beacon contract does not have proper access control")
+
+    # UUPS Pattern - Check proxiableUUID function
+    proxiable_uuid_func = search_function(ast_data, "proxiableUUID")
+    if not proxiable_uuid_func:
+        results.append("Missing proxiableUUID function in UUPS pattern")
+    
+    # Detect Self-Destruct Vulnerability
+    for func in functions:
+        body = func.get("body", [])
+        for statement in body:
+            if "selfdestruct" in statement.get("expression", {}):
+                results.append(f"Self-destruct found in {func.get('name')}, posing a risk to contract security")
+
+    return results
